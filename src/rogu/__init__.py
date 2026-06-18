@@ -1,5 +1,5 @@
 """
-See logging details
+A simple package to show details of Python logging.
 """
 
-from .rogu import write_log_tree as tree
+from .view import write_log_tree
