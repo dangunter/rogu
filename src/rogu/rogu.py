@@ -1,14 +1,16 @@
 """
 Get information about the current tree of
-Python loggers.
+Python loggers and write it in a compact
+form.
+
+Note: This is a very simple package that has no
+dependencies outside the Python standard library.
 """
 
 from collections import defaultdict
-from dataclasses import dataclass, field
 from io import IOBase
 import logging
 import math
-from operator import itemgetter
 from pathlib import Path
 import sys
 
@@ -17,25 +19,22 @@ __author__ = "Dan Gunter"
 logging.basicConfig()
 _log = logging.getLogger("rogu.rogu")
 
-loglvl = defaultdict(
-    lambda: "U",
-    {
-        logging.NOTSET: "N",
-        logging.DEBUG: "D",
-        logging.INFO: "I",
-        logging.WARNING: "W",
-        logging.ERROR: "E",
-        logging.CRITICAL: "C",
-    },
-)
-
 # vt100 color codes
 RED, GRN, YEL = "\033[31m", "\033[32m", "\033[33m"
 BLU, CYN, MGN = "\033[34m", "\033[35m", "\033[36m"
 DIM, RST = "\033[2m", "\033[0m"
 
 # colors for different logging levels
-logcol = {"U": "", "N": "", "P": "", "D": GRN, "I": BLU, "W": YEL, "E": RED, "C": MGN}
+logcol = defaultdict(
+    lambda: "",
+    {
+        logging.DEBUG: GRN,
+        logging.INFO: BLU,
+        logging.WARNING: YEL,
+        logging.ERROR: RED,
+        logging.CRITICAL: MGN,
+    },
+)
 
 
 def dsplit(s: str) -> list[str]:
@@ -43,172 +42,133 @@ def dsplit(s: str) -> list[str]:
     return s.split(".")
 
 
-def djoin(a: list[str]) -> str:
-    """Join with dots"""
-    return ".".join(a)
+class LogInfo:
+    """
+    Collect info about current logging state in a convenient form for
+    printing out to the console.
 
+    Attributes:
+        app: Name for root of printed information, where None = all
+        handlers: List of all handler objects used by selected loggers
+        loggers: List of all logger names
+        logger_levels: Dict mapping logger names to its numeric level
+        logger_handlers: Dict mapping logger names to a list of
+                         integer indexes in `handlers`
+    """
 
-@dataclass
-class LogTree:
-    root_name: str
-    root_level: str
-    log_handlers: list[list[tuple[int, int]]] = field(default_factory=list)
-    loggers: list[str] = field(default_factory=list)
-    handler_digits: int = 0
-    handler_details: list = field(default_factory=list)
+    def __init__(self, app: str = None):
+        logger_dict = logging.getLogger().manager.loggerDict
 
-    gutter_width: int = 0
-
-    def write(self, stream):
-        stream.write(f"from {logcol[self.root_level]}{self.root_name}{RST}:\n")
-        h_fmt = f"{{n:{self.handler_digits}d}}"
-        for i, logger in enumerate(self.loggers):
-            hstr_list = []
-            for n, lvl in self.log_handlers[i]:
-                nstr = h_fmt.format(n=n)
-                hstr_list.append(f"{logcol[lvl]}{nstr}{RST}")
-            hstr = " ".join(hstr_list)
-            hstr += " " * (self.gutter_width - len(hstr))
-            stream.write(f"|{hstr}|{logger}\n")
-        stream.write("\n")
-        num = 1
-        for lvl, class_name, stream_name in self.handler_details:
-            col = logcol[lvl]
-            hstr = h_fmt.format(n=num)
-            stream.write(f" {col}{hstr}. {class_name}({stream_name}) {RST}\n")
-            num += 1
-
-
-class LoggingInfo:
-    def __init__(self, app: str | list[str] = None):
-        self.ostrm = sys.stdout
-        if app is None:  # get list of all top-level names
-            logger_names = logging.getLogger().manager.loggerDict
-            apps = [n for n in logger_names if "." not in n]
-        elif isinstance(app, str):
-            apps = [app]
-        else:  # assume list[str]
-            apps = app
-
-        # collect info on logger objects
-        self._loggers = {}
-        for app in apps:
-            lmap = self._get_loggers(app)
-            if not lmap:
-                raise ValueError(f"No loggers for {app}")
-            self._loggers.update(lmap)
-
-    def _get_loggers(self, app):
-        m = {}
-        for name, logger in logging.getLogger().manager.loggerDict.items():
-            parts = tuple(dsplit(name))
-            if parts[0] == app:
-                lvl = loglvl[getattr(logger, "level", None)]
-                m[(parts, lvl)] = logger
-        # return sorted by name
-        return {k: m[k] for k in sorted(m.keys(), key=itemgetter(0))}
-
-    def get_tree(self, target: str = "") -> LogTree:
-        root_item = ((("<root>",), loglvl[logging.root.level]), logging.root)
-        items = [root_item] + list(self._loggers.items())
-
-        # find target root logger
-        if target:
-            target_parts, match = tuple(dsplit(target)), False
-            for key, _ in items:
-                if key[0] == target_parts:
-                    match, lvl = True, key[1]
-                    break
-            if not match:
-                raise ValueError(f"logger {target} not found")
+        # select loggers
+        if app is None:
+            self.loggers = list(logger_dict.keys())
+            self.app = "<root>"
         else:
-            target_parts, lvl = root_item[0]
-        name, col = djoin(target_parts), logcol[lvl]
-        tree = LogTree(root_name=name, root_level=lvl)
+            pfx = lambda s: s.startswith(app + ".") or s == app
+            self.loggers = [name for name in logger_dict if pfx(name)]
+            self.app = app
+        self.loggers.sort()
 
-        # get the relevant loggers
-        target_parts_len = len(target_parts)
-        h_refs, h_logger_max = {}, 0
-        logrs, logr_handlers = [], []
-        for key, logger in items:
-            parts, lvl = key
-            if target:
-                if (
-                    len(parts) < target_parts_len
-                    or parts[:target_parts_len] != target_parts
-                ):
-                    continue
-            indent = "  " * (len(parts) - 1)
-            col, ppg = logcol[lvl], (
-                "." if getattr(logger, "propagate", None) is False else ""
-            )
-            logr = f"{indent}{col}{parts[-1]}{ppg}{RST}"
-            logr_h = []  # list of logger handler info
-            cur_handlers = getattr(logger, "handlers", [])
-            for h in cur_handlers:
-                parts = getattr(h, "name", "-") or "-"
-                try:  # look for existing first
-                    h_num = h_refs[h]
-                except KeyError:
-                    h_num = len(h_refs)
-                    h_refs[h] = h_num
-                logr_h.append((loglvl[h.level], h_num + 1))
-            h_logger_max = max(h_logger_max, len(cur_handlers))
-            logrs.append(logr)
-            logr_handlers.append(logr_h)
+        # cache level of each selected logger
+        self.logger_levels = {
+            name: logging.getLogger(name).level for name in self.loggers
+        }
 
-        # calculate left-hand gutter for handler numbers
-        tree.handler_digits = int(math.log(len(h_refs), 10)) + 1
-        tree.gutter_width = tree.handler_digits * h_logger_max + h_logger_max - 1
-
-        # process handlers + loggers
-        for i in range(len(logrs)):
-            if logr_handlers[i]:
-                nwid, hlist = 0, []
-                for lvl, n in logr_handlers[i]:
-                    hlist.append((n, lvl))
-                    nwid += tree.handler_digits  # len(nstr)
-                nwid += len(logr_handlers[i]) - 1
-                tree.log_handlers.append(hlist)
-            else:
-                tree.log_handlers.append([])
-            tree.loggers.append(logrs[i])
-
-        # add handler details
-        h_refs_rev = {i: h for h, i in h_refs.items()}
-        for i in range(len(h_refs)):
-            h = h_refs_rev[i]
-            lvl = loglvl[h.level]
-            cname = h.__class__.__name__
-            # get a name for the stream output
-            if isinstance(h, logging.StreamHandler):
-                if h.stream == sys.stderr:
-                    strm = "err"
-                elif h.stream == sys.stdout:
-                    strm = "out"
+        # get handlers for selected loggers
+        self.logger_handlers = defaultdict(list)  # logger: list(index)
+        handler_map = {}  # handler: index
+        for lg in self.loggers:
+            for h in getattr(logging.getLogger(lg), "handlers", []):
+                if h in handler_map:
+                    self.logger_handlers[lg].append(handler_map[h])
                 else:
-                    strm = "stream"
-            elif isinstance(h, logging.FileHandler):
-                strm = str(h.baseFilename)
-            else:
-                strm = "other"
-            tree.handler_details.append((lvl, cname, strm))
+                    index = len(handler_map)
+                    handler_map[h] = index
+                    self.logger_handlers[lg].append(index)
 
-        return tree
+        # copy unique handlers from `handler_map` into a list (by index)
+        self.handlers = [None] * len(handler_map)
+        for h, index in handler_map.items():
+            self.handlers[index] = h
 
+    def write(self, stream: IOBase):
+        """Write the log information, in a compact form, to the provided stream."""
+        # write header
+        stream.write(f"[{self.app}]\n")
 
-def print_log_tree(root: str = None, stream: IOBase | str | Path = None):
-    """Print the logging information for all loggers below a given root."""
-    li = LoggingInfo(root)
-    if stream:
-        if isinstance(stream, str):
-            path = Path(stream)
-            ostream = path.open("w")
-        elif isinstance(stream, Path):
-            ostream = stream.open("w")
+        # write logging tree
+        hlen = len(self.handlers)
+        handler_digits = 1 if hlen < 1 else int(math.log(hlen)) + 1
+        handler_fmt = f"{{n:{handler_digits}d}}"
+        if self.logger_handlers:
+            max_handlers = max([len(v) for v in self.logger_handlers.values()])
         else:
-            ostream = stream
-        li.output_stream = ostream
-    else:
-        ostream = sys.stdout
-    li.get_tree().write(ostream)
+            max_handlers = 1
+        handlers_width = max_handlers * (handler_digits + 1) - 1
+        indent, colsep = "  ", " | "
+        for logger in self.loggers:
+            count = 0
+            first = True
+            for index in self.logger_handlers[logger]:
+                if not first:
+                    stream.write(" ")
+                    count += 1
+                lvl = self.handlers[index].level
+                stream.write(logcol[lvl])
+                stream.write(handler_fmt.format(n=index + 1))
+                stream.write(RST)
+                count += handler_digits
+                first = False
+            stream.write(" " * (handlers_width - count))
+            stream.write(colsep)
+            parts = dsplit(logger)
+            lvl = self.logger_levels[logger]
+            stream.write(logcol[lvl])
+            stream.write(indent * (len(parts) - 1) + parts[-1])
+            stream.write(f"{RST}\n")
+
+        # write list of handlers
+        stream.write("\n")
+        rec = logging.LogRecord("example", logging.INFO, "/", 0, "message", [], None)
+        for i, handler in enumerate(self.handlers):
+            lvl = handler.level
+            num = handler_fmt.format(n=i + 1)  # lines up with column above
+            out = self._stream_output(handler)
+            ex = handler.format(rec)
+            stream.write(
+                f"{logcol[lvl]}{num}. {handler.__class__.__name__}({out}) - {ex}{RST}\n"
+            )
+
+    @staticmethod
+    def _stream_output(h) -> str:
+        if isinstance(h, logging.StreamHandler):
+            if h.stream == sys.stdout:
+                return "stdout"
+            elif h.stream == sys.stderr:
+                return "stderr"
+            else:
+                return "stream"
+        elif isinstance(h, logging.FileHandler):
+            return "file"
+        return "other"
+
+
+def _get_stream(stream) -> IOBase:
+    if isinstance(stream, str):
+        return Path(stream).open("w")
+    elif isinstance(stream, Path):
+        return stream.open("w")
+    return stream
+
+
+def write_log_tree(root: str = None, stream: IOBase | str | Path = sys.stdout):
+    """Write the logging information, for all loggers below a given root,
+    to the provided stream.
+
+    Arguments:
+        root: Select only loggers at or below this one
+        stream: Output stream. A string or Path is interpreted as a file to open
+                in "w" mode (overwrite any existing).
+    """
+    li = LogInfo(root)
+    li.write(_get_stream(stream))

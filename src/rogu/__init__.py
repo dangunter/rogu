@@ -2,4 +2,4 @@
 See logging details
 """
 
-from .rogu import print_log_tree
+from .rogu import write_log_tree as tree
