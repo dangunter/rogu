@@ -40,8 +40,10 @@ __author__ = "Dan Gunter"
 class Names:
     """Customize to use different markers for begin/end messages."""
 
-    begin = "(begin)"
-    end = "(end)"
+    begin = "-"
+    end = "~"
+    begin_before = True  # before/after identifier
+    end_before = True  # before/after identifier
 
 
 class NVP:
@@ -67,7 +69,10 @@ def begin(identifier: str, **values) -> str:
         Message string
     """
     _identifier_times[identifier] = time.time()
-    return f"{Names.begin}{identifier}{_format_values(values)}"
+    if Names.begin_before:
+        return f"{Names.begin}{identifier}{_format_values(values)}"
+    else:
+        return f"{identifier}{Names.begin}{_format_values(values)}"
 
 
 def end(identifier: str, **values) -> str:
@@ -90,7 +95,10 @@ def end(identifier: str, **values) -> str:
         values["dur_sec"] = f"{now - t0:.6g}"
         del _identifier_times[identifier]
 
-    return f"{Names.end}{identifier}{_format_values(values)}"
+    if Names.end_before:
+        return f"{Names.end}{identifier}{_format_values(values)}"
+    else:
+        return f"{identifier}{Names.end}{_format_values(values)}"
 
 
 def msg(identifier: str, **values) -> str:
